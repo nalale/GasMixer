@@ -85,7 +85,6 @@ extern unsigned short OperationState;
 extern PlanElement_t Plan[];
 extern unsigned short CurrentPlan;
 extern unsigned short PlanSize;
-extern uint32_t Ms10Counter;
 
 extern volatile float CurrentO2;
 extern volatile float CurrentCO2;

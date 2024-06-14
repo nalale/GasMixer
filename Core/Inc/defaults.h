@@ -44,7 +44,6 @@ double SpeedOut(double P, double adiobata);
 double VOut(double S, double P, double adiobata);
 double MOut(double S, double P, double adiobata, double Ro);
 
-#define UART_BUF_Size 		256
 #define MAX_Plan 			16
 #define MIX_Time 			60
 #define PLAN_Update_Time 	10

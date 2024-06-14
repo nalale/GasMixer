@@ -27,11 +27,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
-#include "CRC.h"
+
 
 #include "mb.h"
 #include "mbport.h"
-#include "user_mb_app_m.h"
+#include "user_mb_app.h"
+#include "user_mb_handlers.h"
 #include "tools.h"
 #include "user_eeprom.h"
 #include "user_app.h"
@@ -44,8 +45,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define MS_COUNTER_100_MS	100
-#define MS_COUNTER_10_MS	10
+#define BLINK_WAIT_PERIOD_MS	500
+#define BLINK_OP_PERIOD_MS		250
+
+#define SCHEDULE_PROC_STOPPED 0xff
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -76,23 +80,8 @@ unsigned short LastCommand = 0;
 unsigned short* MB3Regs[MB_MAX3regs];
 unsigned short* MB4Regs[MB_MAX4regs];
 
-extern USHORT   usSRegHoldBuf[];
-extern USHORT   usSRegInBuf[];
-
 volatile unsigned short ADC_Data[6];
 
-unsigned char UART2_RX_Buf[UART_BUF_Size];
-unsigned char UART3_RX_Buf[UART_BUF_Size];
-unsigned char UART2_RX_Pos = 0;
-unsigned char UART3_RX_Pos = 0;
-unsigned char UART2_TX_Buf[UART_BUF_Size];
-unsigned char UART3_TX_Buf[UART_BUF_Size];
-unsigned char UART2_TX_Pos = 0;
-unsigned char UART3_TX_Pos = 0;
-//unsigned char UART2_DataLength = 0;
-//unsigned char UART3_DataLength = 0;
-unsigned char UART2_RX_Char;
-unsigned char UART3_RX_Char;
 
 float k1 = DEF_k1;
 float b1 = DEF_b1;
@@ -120,15 +109,17 @@ float SValve_N2 = S_N2;
 float SValve_CO2 = S_CO2;
 
 unsigned short OperationState = 0;
+EEPROM_Statuses_t UseEEPROM = EEPROM_FREE;
 
 PlanElement_t Plan[MAX_Plan];
-unsigned short CurrentPlan = 0;
+unsigned short CurrentPlan = SCHEDULE_PROC_STOPPED;
 unsigned short PlanSize = 0;
 
-static uint32_t msCounter = 0;
-uint32_t Ms10Counter = 0;
+static uint32_t msBlinkCounter = 0;
+static uint32_t MsScheduleUpdateCounter = PLAN_Update_Time * 1000;
+static uint32_t msBlinkPeriod = BLINK_WAIT_PERIOD_MS;
 
-EEPROM_Statuses_t UseEEPROM = EEPROM_FREE;
+
 
 /* USER CODE END PV */
 
@@ -149,9 +140,7 @@ void Assign_MB_Mem(void);
 void FillDeviceSN(void);
 
 
-
-
-
+/*
 void OpenN2(void);
 void OpenCO2(void);
 void CloseN2(void);
@@ -160,6 +149,7 @@ void CloseCO2(void);
 int CalcN2(int PlanIndex); //return milliseconds
 int CalcCO2(int PlanIndex);
 void CreatePlan(void);
+*/
 
 /* USER CODE END PFP */
 
@@ -172,24 +162,24 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 	{
 		HAL_UART_AbortTransmit_IT(&huart2);
 		HAL_UART_AbortReceive_IT(&huart2);
-		UART2_RX_Pos = 0;
+//		UART2_RX_Pos = 0;
 	//	UART2_RX_Buf[0] = 0;
-		HAL_UART_Receive_IT(&huart2, &UART2_RX_Char, 1);
+//		HAL_UART_Receive_IT(&huart2, &UART2_RX_Char, 1);
 	}
 	if (huart == &huart3)
 	{
 		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_RESET);
 		HAL_UART_AbortTransmit_IT(&huart3);
 		HAL_UART_AbortReceive_IT(&huart3);
-		UART3_RX_Pos = 0;
+	//	UART3_RX_Pos = 0;
 //		UART3_RX_Buf[0] = 0;
-		HAL_UART_Receive_IT(&huart3, &UART3_RX_Char, 1);
+//		HAL_UART_Receive_IT(&huart3, &UART3_RX_Char, 1);
 	}
 }
 
 void WriteUART2(void)
 {
-	HAL_UART_Transmit_IT(&huart2, (unsigned char*)UART2_TX_Buf, UART2_TX_Pos);
+
 }
 
 void WriteUART3(void)
@@ -198,7 +188,7 @@ void WriteUART3(void)
 	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_14, GPIO_PIN_SET);
 	for (int i =0; i < 100; i++) k++;
 	//HAL_Delay(10);
-	HAL_UART_Transmit_IT(&huart3, (unsigned char*)UART3_TX_Buf, UART3_TX_Pos);
+//	HAL_UART_Transmit_IT(&huart3, (unsigned char*)UART3_TX_Buf, UART3_TX_Pos);
 }
 
 /* USER CODE END 0 */
@@ -243,13 +233,15 @@ int main(void)
 	/* USER CODE BEGIN 2 */
 
 	Assign_MB_Mem();
-	FillDeviceSN();
 
+	InitEEPROM(&hi2c1);
 	// Восстановление параметров из памяти
 	UseEEPROM = LoadFromEEPROM();
 
 	htim1.Instance->CCR1 = 30 * Valve1; //reset - may change on load
 	htim2.Instance->CCR1 = 30 * Valve2;
+
+	FillDeviceSN();
 	InitRelays(&htim2, &htim1);
 	
 	HAL_ADCEx_Calibration_Start(&hadc1);
@@ -261,8 +253,11 @@ int main(void)
 	
 	// ModBus Init
 	eMBInit( MB_RTU, MB_SlaveID, &huart3, 115200, &htim3 );
-	eMBEnable( );
+	eMBEnable();
 
+	// 2nd Modbus Channel
+	userMBInit(MB_SlaveID, &huart2, &htim3 );
+	userMBEnable();
 	
   /* USER CODE END 2 */
 
@@ -272,42 +267,46 @@ int main(void)
   {
 		UpdateMesure();
 		eMBPoll();
-		
-/*		u = IsMBMessage(UART2_RX_Buf, &UART2_RX_Pos); //process for UART2
-		if (u) {
-			UART2_TX_Pos = ProcessMBMessage(UART2_RX_Buf, u, UART2_TX_Buf);
-			if (UART2_TX_Pos) { //Answer for modbus
-				WriteUART2();
-			}
-			ShiftBuffer(UART2_RX_Buf, &UART2_RX_Pos, u);
-		}
-*/
+		userMBPoll();
 
-		if (msTimer_GetFrom(msCounter) >= MS_COUNTER_10_MS) {
-			msCounter = msTimer_GetStamp();
+		if (msTimer_GetFrom(msBlinkCounter) >= msBlinkPeriod) {
+			msBlinkCounter = msTimer_GetStamp();
 
-			Ms10Counter++;
-			//HAL_GPIO_TogglePin(BOARD_LED_GPIO_Port, BOARD_LED_Pin);
-
+			HAL_GPIO_TogglePin(BOARD_LED_GPIO_Port, BOARD_LED_Pin);
 		}
 
 		// Save settings request
 		if(UseEEPROM == EEPROM_SAVE_RQST)
 			UseEEPROM = SaveToEEPROM();
-
-		// Если план не подготовлен - подготовить
-		if (!(OperationState & SOST_PlanReady))
-			OperationState |= CreateSchedule();
 		
+		// Operate command request
+		if (LastCommand == CMD_Start) {
+			if ((OperationState & SOST_PlanReady) && !(OperationState & SOST_Running))
+			{
+				OperationState |= SOST_Running;
+				CurrentPlan = 0;
+			}
+		}
+		else if (LastCommand == CMD_Stop) {
+			OperationState &= ~(SOST_OpenCO2 | SOST_OpenN2 | SOST_Running | SOST_PlanStarted);
+			CurrentPlan = SCHEDULE_PROC_STOPPED;
+		}
+
 		// Если план готов и пришла команда на начало работы
 		if (OperationState & SOST_Running) {
 			ProcSchedule();
+			msBlinkPeriod = BLINK_OP_PERIOD_MS;
 		}
 		else  //Not running = watching
 		{
-			if (Ms10Counter > PLAN_Update_Time * 100) { //обновлять план, если просто наблюдаем каждые PLAN_Update_Time секунд.
+			CloseCO2();
+			CloseN2();
+			msBlinkPeriod = BLINK_WAIT_PERIOD_MS;
+
+			//обновлять план, если просто наблюдаем каждые PLAN_Update_Time секунд.
+			if (msTimer_GetFrom(MsScheduleUpdateCounter) > PLAN_Update_Time * 1000) {
+				MsScheduleUpdateCounter = msTimer_GetStamp();
 				OperationState |= CreateSchedule();
-				Ms10Counter = 0;
 			}
 		}
 		
@@ -1126,23 +1125,9 @@ uint16_t mb_user_data_set(MB_User_Types_t type, uint16_t index, uint16_t data) {
 			}
 		}
 		else if(index == 12) {
-			if ((T == CMD_Start) || (T == CMD_Stop)) {
+			if ((T == CMD_Start) || (T == CMD_Stop))
 				LastCommand = T;
 
-				if (T == CMD_Start) {
-					if (OperationState & SOST_PlanReady)
-					{
-						OperationState |= SOST_Running;
-						CurrentPlan = 0;
-						Ms10Counter = 0;
-					}
-				}
-				if (T == CMD_Stop) {
-					OperationState &= ~(SOST_OpenCO2 | SOST_OpenN2 | SOST_Running | SOST_PlanStarted);
-					CloseCO2();
-					CloseN2();
-				}
-			}
 		}
 		else {
 
@@ -1177,6 +1162,25 @@ uint16_t mb_user_data_set(MB_User_Types_t type, uint16_t index, uint16_t data) {
 		return UINT16_MAX;
 	}
 	return 0;
+}
+
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if(huart->Instance == huart3.Instance)
+	{
+		xMBPortSerialRxCpltCallback(huart);
+	}
+	else if(huart->Instance == huart2.Instance) {
+		userMBRxCallBack(huart);
+	}
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+	if(huart->Instance == huart3.Instance)
+	{
+		xMBPortSerialTxCpltCallback(huart);
+	}
 }
 
 /* USER CODE END 4 */

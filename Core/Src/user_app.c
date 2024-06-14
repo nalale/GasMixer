@@ -8,10 +8,12 @@
 #include <math.h>
 #include <stdint.h>
 #include "main.h"
+#include "tools.h"
 
 static TIM_HandleTypeDef *htim1;		// канал PWM для N2
 static TIM_HandleTypeDef *htim2;		// канал PWM для O2
 
+static uint32_t msScheduleCounter = 0;
 
 static float GetPressure1(unsigned short v)
 { float res;
@@ -151,90 +153,101 @@ void UpdateMesure(void)
 uint8_t CreateSchedule(void)
 {
 	// Задание 0
-	CurrentPlan = 0;
+	uint8_t step = 0;
 	if ((CurrentO2 - TargetO2) > Krit_O2) {
-		CalcN2(CurrentPlan);
-	} else
-		GasPause(CurrentPlan);
+		CalcN2(step);
 
-	// Задание 1
-	CurrentPlan++;
-	GasPause(CurrentPlan);
+		// Задание 1
+		step++;
+		GasPause(step);
+	} else {
+		GasPause(step);
+		step--;
+	}
 
 	// Задание 2
-	CurrentPlan++;
+	step++;
 	if ((TargetCO2 - CurrentCO2) > Krit_CO2) {
-		CalcCO2(CurrentPlan);
-	} else
-		GasPause(CurrentPlan);
+		CalcCO2(step);
 
-	// Задание 3
-	CurrentPlan++;
-	GasPause(CurrentPlan);
+		// Задание 3
+		step++;
+		GasPause(step);
+	} else {
+		GasPause(step);
+		step--;
+	}
 
 	// Количество шагов, +1 - т.к счет с 0
-	PlanSize = CurrentPlan + 1;
-	CurrentPlan = 0;
+	PlanSize = step + 1;
 
 	return SOST_PlanReady;
 }
 
 void ProcSchedule() {
-	// Если выполнение не начато - начать
-	if (!(OperationState & SOST_PlanStarted))	{
-		OperationState |= SOST_PlanStarted;
 
-		//30-10-23
-		if (Plan[CurrentPlan].GasType == GasType_N2)
-			OpenN2();
-		else if (Plan[CurrentPlan].GasType == GasType_O2)
-			OpenCO2();
+	uint8_t targetAchievedFlag = 0;
+
+	// если выполнили все задания, создать новое расписание
+	if (CurrentPlan >= PlanSize) {
+		OperationState &= SOST_PlanReady;
+		OperationState |= CreateSchedule();
+		CurrentPlan = 0;
+
+	}
+
+	// Если выполнение не начато - начать
+	if (OperationState |= SOST_PlanReady) {
+		if(!(OperationState & SOST_PlanStarted))	{
+			OperationState |= SOST_PlanStarted;
+
+			//30-10-23
+			if (Plan[CurrentPlan].GasType == GasType_N2)
+				OpenN2();
+			else if (Plan[CurrentPlan].GasType == GasType_O2)
+				OpenCO2();
+			else {
+				CloseN2();
+				CloseCO2();
+			}
+		}
+	}
+	else {
+		OperationState |= CreateSchedule();
+		CloseN2();
+		CloseCO2();
 	}
 
 	//Проверяем концентрацию в ходе исполнения
-	if ((Plan[CurrentPlan].GasType == GasType_N2) && (fabs(TargetO2 - CurrentO2) < (Krit_O2 / 2.0f)) && (OperationState & SOST_PlanStarted)) { //30-10-23
-		CloseN2();
-		Ms10Counter = 0;
-		OperationState &= ~SOST_PlanStarted;
-		CurrentPlan++;
+	if ((Plan[CurrentPlan].GasType == GasType_N2) &&
+			(fabs(TargetO2 - CurrentO2) < (Krit_O2 / 2.0f)) &&
+			(OperationState & SOST_PlanStarted))
+	{ //30-10-23
 
-		if (CurrentPlan >= PlanSize)
-			OperationState |= CreateSchedule();
+		targetAchievedFlag = 1;
 	}
 
 
-	if ((Plan[CurrentPlan].GasType == GasType_O2) && (fabs(TargetCO2 - CurrentCO2) < (Krit_CO2 / 2.0f)) && (OperationState & SOST_PlanStarted)) {
-		//30-10-23
-		CloseCO2();
-		Ms10Counter = 0;
-		OperationState &= ~SOST_PlanStarted;
-		CurrentPlan++;
-
-		if (CurrentPlan >= PlanSize)
-			OperationState |= CreateSchedule();
+	if ((Plan[CurrentPlan].GasType == GasType_O2) &&
+			(fabs(TargetCO2 - CurrentCO2) < (Krit_CO2 / 2.0f)) &&
+			(OperationState & SOST_PlanStarted))
+	{
+		targetAchievedFlag = 1;
 	}
 
 	//отрабатываем шаги плана по времени
-	if (((Ms10Counter * 10) > Plan[CurrentPlan].TimeMs) && (OperationState & SOST_PlanStarted)) { //30-10-23
+	if (((msTimer_GetFrom(msScheduleCounter) >= Plan[CurrentPlan].TimeMs) || targetAchievedFlag) &&
+			(OperationState & SOST_PlanStarted))
+	{ //30-10-23
 		//кончаем текущий шаг
-		if (Plan[CurrentPlan].GasType == GasType_N2) CloseN2();
-		if (Plan[CurrentPlan].GasType == GasType_O2) CloseCO2();
+
+		msScheduleCounter = msTimer_GetStamp();
+
+		CloseN2();
+		CloseCO2();
+
 		CurrentPlan++;
-
 		OperationState &= ~SOST_PlanStarted;
-		Ms10Counter = 0;
-
-		if (CurrentPlan < PlanSize) {
-			//начинаем следующий
-			if (Plan[CurrentPlan].GasType == GasType_N2) OpenN2();
-			if (Plan[CurrentPlan].GasType == GasType_O2) OpenCO2();
-			OperationState |= SOST_PlanStarted;  //30-10-23
-		} else {
-			//Пересоздаем план
-			OperationState |= CreateSchedule();
-			//Sost &= ~(SOST_PlanReady | SOST_PlanStarted);
-			OperationState &= ~SOST_PlanStarted;	//30-10-23
-		}
 	}
 }
 

@@ -133,6 +133,12 @@ INLINE BOOL     xMBMasterPortSerialPutByte( CHAR ucByte );
 
 INLINE BOOL     xMBMasterPortSerialPutBytes( volatile UCHAR *ucByte, USHORT usSize );
 
+void 			xMBPortSerialRxCpltCallback(void *dHUART);
+
+void 			xMBPortSerialTxCpltCallback(void *dHUART);
+
+
+
 /* ----------------------- Timers functions ---------------------------------*/
 BOOL            xMBPortTimersInit( USHORT usTimeOut50us, void *dHTIM );
 
