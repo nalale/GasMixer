@@ -16,22 +16,25 @@ static TIM_HandleTypeDef *htim2;		// канал PWM для O2
 static uint32_t msScheduleCounter = 0;
 
 static float GetPressure1(unsigned short v)
-{ float res;
-	res = k1*((double)v / ADC_Scale * ADC_Volts)+b1; //в атмосферах (100 кПа)
+{
+	float res;
+	res = k1*((float)v / ADC_Scale * ADC_Volts)+b1; //в атмосферах (100 кПа)
 	if (res < 0.0) return 0.0;
 	return res;
 }
 
 static float GetPressure2(unsigned short v)
-{ float res;
-	res = k2 * ((double)v / ADC_Scale * ADC_Volts) +b2;
+{
+	float res;
+	res = k2 * ((float)v / ADC_Scale * ADC_Volts) + b2;
 	if (res < 0.0) res = 0.0;
 	return res;
 }
 
 static float GetO2(unsigned short v)
-{ float res;
-	res = (k3*((double)v / ADC_Scale * ADC_Volts)+b3); //в процентах
+{
+	float res;
+	res = (k3*((float)v / ADC_Scale * ADC_Volts)+b3); //в процентах
 	if (res < 0.0) res = 0.0;
 	return res;
 }
@@ -39,7 +42,7 @@ static float GetO2(unsigned short v)
 static float GetCO2(unsigned short v)
 {
 	float res;
-	res = (k4*((double)v / ADC_Scale * ADC_Volts)+b4);
+	res = (k4*((float)v / ADC_Scale * ADC_Volts)+b4);
 	if (res < 0.0) res = 0.0;
 	return res;
 }
@@ -70,7 +73,7 @@ static int CalcN2(int PlanIndex)
 	if (TargetVN2 < 0.0f)
 		TargetVN2 = 0.0f;
 
-	double OneSecondOut = VOut(S_N2 * Valve1 / 100.0f, CurrentPress1, Adiobata_N2) * 1000.0f; //Выход в кубометрах/с * 1000 = литры/с
+	double OneSecondOut = VOut(S_N2 * (float)Valve1 / 100.0f, CurrentPress1, Adiobata_N2) * 1000.0f; //Выход в кубометрах/с * 1000 = литры/с
 	duty_ms = (uint32_t)(TargetVN2 / (float)OneSecondOut * (float)KoefN2 / 100.0f * 1000.0f); // литры / литры/с * Кклапана/100% = с * 1000 = мс
 
 	if (duty_ms < 0)
@@ -91,7 +94,7 @@ static int CalcCO2(int PlanIndex)
 	if (TargetVCO2 < 0.0f)
 		TargetVCO2 = 0.0f;
 
-	double OneSecondOut = VOut(S_CO2 * Valve2 / 100.0f, CurrentPress2, Adiobata_CO2) * 1000.0f;	//Выход в кубометрах/с * 1000 =  литр/с
+	double OneSecondOut = VOut(S_CO2 * (float)Valve2 / 100.0f, CurrentPress2, Adiobata_CO2) * 1000.0f;	//Выход в кубометрах/с * 1000 =  литр/с
 	duty_ms = (uint32_t)(TargetVCO2 / OneSecondOut * KoefCO2 / 100.0f * 1000.0f); 		//литры / литры/секунду * Кклапана/100% * 1000 = мс
 
 	if (duty_ms < 0)
@@ -153,7 +156,7 @@ void UpdateMesure(void)
 uint8_t CreateSchedule(void)
 {
 	// Задание 0
-	uint8_t step = 0;
+	int8_t step = 0;
 	if ((CurrentO2 - TargetO2) > Krit_O2) {
 		CalcN2(step);
 
@@ -178,8 +181,15 @@ uint8_t CreateSchedule(void)
 		step--;
 	}
 
+	// Если впуска газа нет, добавить один шаг паузы
+	if(step < 0)
+	{
+		GasPause(step);
+		step++;
+	}
+
 	// Количество шагов, +1 - т.к счет с 0
-	PlanSize = step + 1;
+	PlanSize = (uint8_t)(step + 1);
 
 	return SOST_PlanReady;
 }

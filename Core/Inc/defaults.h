@@ -37,7 +37,7 @@
 #define DEF_b4 -25
 
 //напряжение АЦП
-#define ADC_Volts 3.3
+#define ADC_Volts 3.3f
 #define ADC_Scale 4096
 
 double SpeedOut(double P, double adiobata);
